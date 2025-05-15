@@ -1,0 +1,563 @@
+Author: Arlie Macdonald, April-May 2025, Arlie.macdonald@uq.edu.au
+#Define the permutation test function
+```{r}
+extract_expression_data = function(expression_count_data_frame, gene_name, gene_cluster_ID){
+  #No fancy variable stuff here, I'm time poor
+  #This function handles the few different scenarios that may be required for expression data out of the data frame. This was previously done insides the bigger function, but because it needs to be split in two it's now done here
+  
+  #Vector to store the extracted expression data in
+  gene_expression = c()
+  
+  #If the cluster_ID is NA, then extract the the expression data across all clusters
+  if(length(gene_cluster_ID) == 1 && is.na(gene_cluster_ID)){
+    
+    #Now cycle through all of the gene names provided. If there is only a single string, then the loop will just run through once
+    for(single_gene_name in gene_name){
+  
+      #Append each gene expression column to the expression vector
+      gene_expression = append(gene_expression, expression_count_data_frame[ , single_gene_name]) #Blank space in first part means all rows (all bins, so all cluster)
+    }
+  }
+  
+  #If cluster_ID is not NA, then it has been set to a cluster ID, and only expression for the cluster is to be extracted
+  #Using the %in% function means that if it is either a single string/int or a list of strings/ints, then it will still work
+  else{
+    #Now cycle through all of the gene names provided. If there is only a single string, then the loop will just run through once
+    for(single_gene_name in gene_name){
+      
+      #Append each gene expression column to the expression vector
+      gene_expression = append(gene_expression, expression_count_data_frame[expression_count_data_frame$cluster %in% gene_cluster_ID, single_gene_name]) #Blank space in first part means all rows (all bins, so all cluster)
+    }
+  }
+    
+  #The gene expression list will now contain the expression from each gene in all of the bins that are included (e.g. all bins that are in clusters 1,2, and 3 for genes A and B)
+  return(gene_expression)
+ 
+  
+}
+
+library(Hmisc)
+permutation_test_for_STOmics_DEGs = function(expression_count_data_frame, gene_1_name, gene_2_name, gene_1_cluster_ID = NA, gene_2_cluster_ID = NA, reps = 10000, plot_histogram = TRUE){
+#' A function to calculate an estimated p value using a permutation test, designed for application to STOmics DEG data.
+#' Tests to see if the difference in expression between two genes, or the same gene for different clusters, is greater than we would expect to see by chance.
+#' Can also test for difference between groups of genes (such as all three genes in a triplicates)
+#' Calculates the p value by shuffling the expression data and dividing it into two permuted "genes", and then calculates the difference in their means. This is done "reps" times, and then portion of the time that the permuted difference was greater than or equal to the observed difference is the raw estimate of the p value
+#' This raw estimate is then used to determine a binomial confidence interval (99.9%), which gives an probabilistic upper limit for the true p value
+#'
+#' @param expresion_count_data_frame A data frame of the data output from Tori's python scripts, with the bin ID in the first column, cluster ID in the second column, and the remaining columns being the gene expression data. The headers for each of the gene columns should be the gene names used in the next two parameters
+#' @param gene_1_name,gene_2_name Names of the two genes to be compared (as strings). Should match the headers of two of the gene expression data columns. Can also be a list of strings if multiple genes are to be combined
+#' @param gene_1_cluster_ID,gene_2_cluster_ID The clusters to be used for gene 1 and gene 2. Default as NA for analysis of all clusters. String or int of the cluster ID to analyse one cluster individually. If you want to analyse a subset of clusters together then enter a vector of the cluster IDs (such as cluster_ID = c(1,3,5,6))
+#' @param reps The number of permutation replicates to be used when calculating the p value. Should be at the very least 1000, and ideally 10000 or greater
+#' @param plot_histogram A boolean to specify whether a plot of a histogram should be generated to display the permulation distribution along with the observed difference in means
+#'
+#' @return A named list, where the first entry is the upper limit of the p value calculated, the second and third are the names of the genes that were tested, the fourth and fifth are the cluster IDs tested (NA if all clusters), the sixth is the observed difference in means between the two genes, and the seventh is a list of means from the permuted samples, which can be used to recreate the plotted histogram
+#' 
+#' NOTE: This function could be sped up monumentally by doing regular checks to see if the simulated value has been greater than the observed one some number of times. If this has been observed some number of times, then you can be confident that the adjusted p value won't be significant, and cut the simulations short. I didn't do that though, and we just ran it for longer than was necessary
+ 
+  #Extract expression for the genes/gene groups
+  gene_1_expression = extract_expression_data(expression_count_data_frame = expression_count_data_frame, gene_name = gene_1_name, gene_cluster_ID = gene_1_cluster_ID)
+  
+  gene_2_expression = extract_expression_data(expression_count_data_frame = expression_count_data_frame, gene_name = gene_2_name, gene_cluster_ID = gene_2_cluster_ID)
+  
+  #Calculate the difference in their means, as this is what we are trying to demonstrate is significant
+  difference_in_means = mean(gene_1_expression) - mean(gene_2_expression)
+
+  #We will also need the two list of expression combined to sample from
+  combined_expression = append(gene_1_expression, gene_2_expression)
+  
+  #Vector to store the resulting differences in
+  #Stuff inside is details of how long it will be, because it speeds up the loop to do it this way rather than using append()
+  random_permutation_differences = vector(mode = 'double', length = reps)
+  
+  #Cycle through "reps" number of times
+  for(i in 1:reps){
+  
+    #First, use the sample() function to randomise the order of the combined expression data
+    shuffled_expression = sample(combined_expression)
+    
+    #We can now take the first half of this shuffled combined data as our new "gene_1" and the second half as "gene_2"
+    permutation_expression_1 = shuffled_expression[1:length(gene_1_expression)] #First half is from 1 to the length of the gene
+    permutation_expression_2 = shuffled_expression[(length(gene_1_expression)+1):(length(gene_1_expression) + length(gene_2_expression))] #Second half is from length of the first gene plus 1 until the length of both genes combined
+    
+    permutation_difference_in_means = mean(permutation_expression_1) - mean(permutation_expression_2)
+    random_permutation_differences[i] = permutation_difference_in_means
+  
+    
+  }
+  
+  #Plot a histogram of the permutation differences. Run abline at the same time to see where the observed value occurs in the distribution
+  if(plot_histogram == TRUE){
+    hist(random_permutation_differences, 
+          xlim = 1.4 * c(
+            min(min(random_permutation_differences), -abs(difference_in_means)), 
+            max(max(random_permutation_differences), abs(difference_in_means))
+          )
+        )
+    abline(v=c(-difference_in_means, difference_in_means), col="red")
+  }
+  
+  #We can now get an estimate for the p value. We first need to count the number of times the simulated difference was greater than the observed difference
+  count_perm_larger_than_observed <- sum(abs(random_permutation_differences)>=abs(difference_in_means))
+
+  #Now use that value to determine a confidence interval for the true p value, and take the upper limit of that as a value we can be confident p is less than
+  #We can get a confidence interval for the true p value using a binomial distribution
+    #This is because the binomial distribution models "coin flips", and in this case every simulation is like flipping the coin saying "will this result be less than the one I observed, or will it be greater than/equal to?"
+    #We know that we flipped this "coin" reps number of times (500,000), and saw the "greater than/equal to" option some number of times.
+  #Using the below function creates a confidence interval for what the true probability of "heads" is given the number of heads we observed in "reps" number of flips
+  #Use alpha of 0.001 to get 99.9% confidence interval
+  #This returns a vector, and the third element is the upper limit of the confint
+  p_value_upper_limit = binconf(count_perm_larger_than_observed, reps, method='exact', alpha = 0.001)[3]
+  
+  #Return the p value, the observed difference, and the list of the permuted differences for reference
+  return(list("p_value_upper" = p_value_upper_limit, "gene_1_name" = list(gene_1_name), "gene_2_name" = list(gene_2_name), "gene_1_cluster_ID" = list(gene_1_cluster_ID), "gene_2_cluster_ID" = list(gene_2_cluster_ID), "observed_difference_in_means" = difference_in_means, "list_of_permuted_difference_in_means" = list(random_permutation_differences)))
+}
+
+```
+
+
+
+
+
+
+#Define functions for formatting test 1 and test 2 input variables
+Test 1 gene pairwise test list generator function
+For Test 1, for each triplicate, we want to do all three pairwise tests. The function goes through the triplicates and for each one makes the three pairs. It then adds the one gene pair to the end
+```{r}
+
+test_1_gene_pair_list = function(triplicate_and_pair_list){
+  #Triplicates are set of three matching genes from the three subgenomes
+  #pairs are as as above but where one subgenome doesn't have the gene
+  #Returns the list of pairwise tests to be done for each triplicate or duplicate. 
+  
+  #Empty list to store the output in
+  list_of_pairs_to_test = list()
+  
+  #Cycle through all of the triplicates and duplicates in the list
+  for(gene_group in triplicate_and_pair_list){
+    #For each group, want all possible pairwise comparisons. Can be achieved with following code that cycles through all but the last gene in the group (so just the first in a pair), and then makes all of the pairs between that gene and the ones later in the list
+    #e.g. for triplicate, first pull out gene 1, and generate pairs between 1 and remaining (2 and 3), giving 1:2 and 1:3. Then pull out gene 2, and do pairs between 2 and remaining (3) giving 2:3. Then hit length -1 and stop.
+    for(i in 1:(length(gene_group) - 1)){
+      for(j in (i+1):length(gene_group)){
+        
+        #Add this pairing to the list
+        list_of_pairs_to_test = append(list_of_pairs_to_test, list(c(gene_group[i], gene_group[j])))
+        
+      }
+    }
+  }
+
+  return(list_of_pairs_to_test)
+
+}
+
+```
+
+Similar to above, for Test 2 we need all pairs of clusters to be used for all triplicates
+```{r}
+
+test_2_cluster_pair_generator = function(tissue_cluster_groups){
+    
+  list_of_cluster_group_pairs = list()
+  
+  #Cycle through all of the cluster grups other than the last (because the last will already have been paired with everything, as we don't care about order)
+  for(i in 1:(length(tissue_cluster_groups) - 1)){
+    #Cycle through each cluster group greater than the current i value (that is, i+1 until the length)
+    for(j in (i+1):length(tissue_cluster_groups)){
+      
+      #Add this pairing to the list
+      list_of_cluster_group_pairs = append(list_of_cluster_group_pairs, list(c(tissue_cluster_groups[i], tissue_cluster_groups[j])))
+      
+    }
+    
+  }
+  
+  return(list_of_cluster_group_pairs)
+}
+
+```
+
+
+
+#Define the three test functions
+Test 1: Overall expression between pairs in triplicates
+```{r}
+test_1_function = function(expression_count_data_frame, list_of_pairs_to_test, reps = 500000, plot_histogram = FALSE, gene_1_cluster_ID = NA, gene_2_cluster_ID = NA, store_simulation_diffs = FALSE){ 
+  #First two inputs are the input data explained in more detail elsewhere in the script
+  #All other inputs correspond to the inputs for permutation test function, other than the simulation diffs
+  #store_simulation_diffs: if TRUE, saves the simulated values to a large list for future reference. Not strictly necessary, and it takes up RAM, so set to FALSE
+
+  test_1_results = data.frame()
+  
+  #Loop through each test 
+  for(gene_pair_to_test in list_of_pairs_to_test){
+    
+    print(gene_pair_to_test[[1]])
+    print(gene_pair_to_test[[2]])
+    
+    #Run the permutation test
+    test_output = permutation_test_for_STOmics_DEGs(expression_count_data_frame = expression_count_data_frame, gene_1_name = gene_pair_to_test[[1]], gene_2_name = gene_pair_to_test[[2]], gene_1_cluster_ID = gene_1_cluster_ID, gene_2_cluster_ID = gene_2_cluster_ID, reps = reps, plot_histogram = plot_histogram)
+    
+    #Now add the common names of the genes to the start of this list. names() will get those names from the pair as the pair is a named list with the common name as the name, and the ID as the value
+    #Because of awkward formatting with data frames, every entry in the test_output needs to be handled separately, because some of them are lists that will fill in strange
+    result_entry = list("gene_1_common_name" = names(gene_pair_to_test[1]), "gene_2_common_name" = names(gene_pair_to_test[2]), "observed_difference_in_means" = test_output[[6]], "p_value_upper" = test_output[[1]], "replicates" = reps, "gene_1_name" = toString(test_output[[2]]), "gene_2_name" = toString(test_output[[3]]), "gene_1_cluster_ID" = toString(test_output[[4]]), "gene_2_cluster_ID" = toString(test_output[[5]]))
+    
+    #If required, also save the long list of simulated differences
+    if(store_simulation_diffs == TRUE){ 
+       result_entry = append(result_entry, list("list_of_permuted_difference_in_means" = toString(test_output[[7]])))
+      
+    }
+    
+    test_1_results = rbind(test_1_results, result_entry)
+    
+  }
+  
+  return(test_1_results)
+  
+}
+
+```
+
+Test 2: Overall expression between pairs in triplicates
+```{r}
+test_2_function = function(expression_count_data_frame, gene_groups_list, list_of_cluster_group_pairs, reps = 500000, plot_histogram = FALSE, store_simulation_diffs = FALSE){
+  #See definitions for test 1
+  
+  test_2_results = data.frame()
+  
+  #Loop through each triplicate
+  for(gene_group in gene_groups_list){
+    
+    print(gene_group)
+    
+    #For each triplicate, do all of the cluster comparison tests
+    for(cluster_group in list_of_cluster_group_pairs){
+      
+      #Run the permutation test
+      test_output = permutation_test_for_STOmics_DEGs(expression_count_data_frame = expression_count_data_frame, gene_1_name = gene_group, gene_2_name = gene_group, gene_1_cluster_ID = cluster_group[[1]], gene_2_cluster_ID = cluster_group[[2]], reps = reps, plot_histogram = plot_histogram)
+      
+      #Add the names of the custer group as well as the genes in the triplicate to the start of this list
+      #Because of awkward formatting with data frames, every entry in the test_output needs to be handled separately, because some of them are lists that will fill in strange
+      result_entry = list("triplicate_names" = toString(names(gene_group)), "cluster_group_1_name" = names(cluster_group[1]), "cluster_group_2_name" = names(cluster_group[2]), "observed_difference_in_means" = test_output[[6]], "p_value_upper" = test_output[[1]], "replicates" = reps, "gene_1_name" = toString(test_output[[2]]), "gene_2_name" = toString(test_output[[3]]), "gene_1_cluster_ID" = toString(test_output[[4]]), "gene_2_cluster_ID" = toString(test_output[[5]]))
+      
+      #If required, also save the long list of simulated differences
+      if(store_simulation_diffs == TRUE){ 
+       result_entry = append(result_entry, list("list_of_permuted_difference_in_means" = toString(test_output[[7]])))
+      
+      }
+      
+      test_2_results = rbind(test_2_results, result_entry)
+      
+    }
+    
+  }
+  
+  return(test_2_results)
+  
+}
+
+```
+
+
+Test 3: Same idea as test 2, but now rather than all genes in each triplicate, it's each of the genes in one triplicate
+```{r}
+test_3_function = function(expression_count_data_frame, genes_to_test, list_of_cluster_group_pairs, reps = 500000, plot_histogram = FALSE, store_simulation_diffs = FALSE){
+  
+  
+  
+  test_3_results = data.frame()
+  
+  #Loop through each gene triplicate
+  
+  for(gene in genes_to_test){
+    
+    print(gene)
+    
+    #For each triplicate, do all of the cluster comparison tests
+    #This should be labelled clutser_group_pair
+    for(cluster_group in list_of_cluster_group_pairs){
+      print(cluster_group)
+      
+      #Run the permutation test
+      test_output = permutation_test_for_STOmics_DEGs(expression_count_data_frame = expression_count_data_frame, gene_1_name = gene, gene_2_name = gene, gene_1_cluster_ID = cluster_group[[1]], gene_2_cluster_ID = cluster_group[[2]], reps = reps, plot_histogram = plot_histogram)
+      
+      
+      result_entry = list("gene_common_name" = names(genes_to_test[genes_to_test == gene]), "cluster_group_1_name" = names(cluster_group[1]), "cluster_group_2_name" = names(cluster_group[2]), "observed_difference_in_means" = test_output[[6]], "p_value_upper" = test_output[[1]], "replicates" = reps, "gene_1_name" = toString(test_output[[2]]), "gene_2_name" = toString(test_output[[3]]), "gene_1_cluster_ID" = toString(test_output[[4]]), "gene_2_cluster_ID" = toString(test_output[[5]]))
+      
+      #If required, also save the long list of simulated differences
+      if(store_simulation_diffs == TRUE){ 
+       result_entry = append(result_entry, list("list_of_permuted_difference_in_means" = toString(test_output[[7]])))
+      
+      }
+    
+      test_3_results = rbind(test_3_results, result_entry)
+      
+    }
+    
+  }
+ 
+  return(test_3_results)
+   
+}
+
+```
+
+#Function to run Bonferroni correction
+```{r}
+#Little function to spit out the corrected pvalue in the format we want
+
+library(plyr)
+
+adjust_p_value_text = function(p_value_upper, bonferroni_correction_factor = 264){
+  
+  #For a simple Bonferroni correction, just multiply observed p by the number of tests
+  #In this case, number of tests are #3 * 88 independent test, with 88 being the number of comparisons between "tests" 1 2 and 3, and then 3 chips giving the total of 264
+    
+  adjusted_p = min(1, bonferroni_correction_factor * p_value_upper)
+  
+  #Now want to round this to a certain number of decimal places for formatting. Always want to round up as we are doing "les than" later. 
+  #Can do this using plyr
+  rounded_adjusted_p = round_any(x = adjusted_p, accuracy = 0.005, f = ceiling)
+  
+  #We want to report this as "less than" because we are estimating the p value with the permutation test
+  #Need to do a check to see what the value is. Depending on the result, the format is different
+  if(rounded_adjusted_p == 1){ #If the adjusted p value is 1, it doesn't need a less than or greater than signifyer
+    adjusted_p_text = "1" #Text version of the value, which is one
+  }
+  else if(rounded_adjusted_p > 0.05){ #If it is greater than 0.05, then it's not statistically significant after correction, and we can simply put it as > 0.05
+    adjusted_p_text = "> 0.05"
+  }
+  else{ #If neither above condition has been met, then the value is significant, and the level of significance is identified by the upper bound. FOrmat the text to say "less than that upper bound"
+     adjusted_p_text = paste("<", rounded_adjusted_p)
+  }
+
+  return(adjusted_p_text)
+
+}
+```
+
+
+
+
+
+#Analysis of Subsamples B1 (Chip 1)
+Read in the CSV
+```{r}
+#Use read.csv to read in the data, and data.frame to make sure it is in data frame format
+#REMEMBER TO ADD BACK IN "LOC123064838" column of all 0 if you remake the csv files
+expression_count_B1_df = data.frame(read.csv("subsamplesB1.csv"))
+
+```
+
+Define the gene triplicates and the cluster groups to be tested
+```{r}
+#Triplicates/duplicates need to be stored in lists, because c() vectors just makes one long vector
+
+gene_triplicates_and_pairs = list(
+  list(pinB_A = "LOC123101925", pinB_B = "LOC543308", pinB_D = "LOC100125699"), 
+  list(TaNAC019_A = "LOC123057832", TaNAC019_B = "LOC123064838", TaNAC019_D = "LOC123073994"), 
+  list(TabZIP28_A = "LOC123187748", TabZIP28_B = "LOC123043995", TabZIP28_D = "LOC123051864"), 
+  list(EM_A = "LOC543476", EM_B = "LOC543084", EM_D = "LOC123182837"), 
+  list(ASI_A = "LOC123185730", ASI_B = "LOC123041664", ASI_D = "LOC123049628"), 
+  list(PPDK_A = "LOC123055206", PPDK_B = "LOC123132411", PPDK_D = "LOC123181969"), 
+  list(ATG8_A = "LOC123188447", ATG8_B = "LOC123044698", ATG8_D = "LOC542962"),
+  list(Met_B = "LOC123104584", Met_D = "LOC123179983")
+  )
+
+#Genes for test 3
+test_3_genes = list("ASI_A" = "LOC123185730", "ASI_B" = "LOC123041664", "ASI_D" = "LOC123049628")
+
+#The cluster groups corresponding to the different tissue types
+cluster_groups = list(
+  "endosperm_clusters" = list(1,3,4,6),
+  "pericarp_cluster" = list(8),
+  "crease_clusters" = list(7,10),
+  "embryo_cluster" = list(9)
+)
+```
+
+Use the defined functions to format the input data into the forms required for test 1 and 2
+```{r}
+list_of_gene_pairs_for_test_1 = test_1_gene_pair_list(triplicate_and_pair_list = gene_triplicates_and_pairs)
+list_of_cluster_group_pairs_for_test_2 = test_2_cluster_pair_generator(tissue_cluster_groups = cluster_groups)
+```
+
+
+Run the three tests
+```{r}
+reps = 5000 #Large enough for confidence after bonferroni correction
+
+test_1_results_B1 = test_1_function(expression_count_data_frame = expression_count_B1_df, list_of_pairs_to_test = list_of_gene_pairs_for_test_1, reps = reps)
+
+test_2_results_B1 = test_2_function(expression_count_data_frame = expression_count_B1_df, gene_groups = gene_triplicates_and_pairs, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+
+test_3_results_B1 = test_3_function(expression_count_data_frame = expression_count_B1_df, genes_to_test = test_3_genes, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+```
+
+Adjust the p values in all three tests
+```{r}
+library(tibble) #For editing the data frames
+#sapply runs everything in a list through a function, in this case all p values through our p value adjuster
+#add_column adds the "adjusted_p_value" = ... column after the "p_value" column
+test_1_results_B1_adjusted = add_column(test_1_results_B1, "adjusted_p_value" = sapply(X = test_1_results_B1$p_value_upper, FUN = adjust_p_value_text), .after = "p_value_upper")
+
+test_2_results_B1_adjusted = add_column(test_2_results_B1, "adjusted_p_value" = sapply(X = test_2_results_B1$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+
+test_3_results_B1_adjusted = add_column(test_3_results_B1, "adjusted_p_value" = sapply(X = test_3_results_B1$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+```
+
+
+Save the outputs to CSVs
+```{r}
+write.csv(x = test_1_results_B1_adjusted, file = "B1_test_1_results.csv", row.names = FALSE)
+write.csv(x = test_2_results_B1_adjusted, file = "B1_test_2_results.csv", row.names = FALSE)
+write.csv(x = test_3_results_B1_adjusted, file = "B1_test_3_results.csv", row.names = FALSE)
+```
+
+#Analysis of Subsamples A4 (Chip 2)
+Read in the CSV
+```{r}
+#Use read.csv to read in the data, and data.frame to make sure it is in data frame format
+#REMEMBER TO ADD BACK IN "LOC123064838" column of all 0 if you remake the csv files
+expression_count_A4_df = data.frame(read.csv("nonnormsubsamplesA4.csv"))
+
+```
+
+Define the gene triplicates and the cluster groups to be tested
+```{r}
+#Triplicates/duplicates need to be stored in lists, because c() vectors just makes one long vector
+
+gene_triplicates_and_pairs = list(
+  list(pinB_A = "LOC123101925", pinB_B = "LOC543308", pinB_D = "LOC100125699"), 
+  list(TaNAC019_A = "LOC123057832", TaNAC019_B = "LOC123064838", TaNAC019_D = "LOC123073994"), 
+  list(TabZIP28_A = "LOC123187748", TabZIP28_B = "LOC123043995", TabZIP28_D = "LOC123051864"), 
+  list(EM_A = "LOC543476", EM_B = "LOC543084", EM_D = "LOC123182837"), 
+  list(ASI_A = "LOC123185730", ASI_B = "LOC123041664", ASI_D = "LOC123049628"), 
+  list(PPDK_A = "LOC123055206", PPDK_B = "LOC123132411", PPDK_D = "LOC123181969"), 
+  list(ATG8_A = "LOC123188447", ATG8_B = "LOC123044698", ATG8_D = "LOC542962"),
+  list(Met_B = "LOC123104584", Met_D = "LOC123179983")
+  )
+
+#Genes for test 3
+test_3_genes = list("ASI_A" = "LOC123185730", "ASI_B" = "LOC123041664", "ASI_D" = "LOC123049628")
+
+#The cluster groups corresponding to the different tissue types
+cluster_groups = list(
+  "endosperm_clusters" = list(3,5,7,9),
+  "pericarp_cluster" = list(11),
+  "crease_clusters" = list(4,6),
+  "embryo_cluster" = list(8)
+)
+```
+
+Use the defined functions to format the input data into the forms required for test 1 and 2
+```{r}
+list_of_gene_pairs_for_test_1 = test_1_gene_pair_list(triplicate_and_pair_list = gene_triplicates_and_pairs)
+list_of_cluster_group_pairs_for_test_2 = test_2_cluster_pair_generator(tissue_cluster_groups = cluster_groups)
+```
+
+
+Run the three tests
+```{r}
+reps = 500000 #Large enough for confidence after bonferroni correction
+
+test_1_results_A4 = test_1_function(expression_count_data_frame = expression_count_A4_df, list_of_pairs_to_test = list_of_gene_pairs_for_test_1, reps = reps)
+
+test_2_results_A4 = test_2_function(expression_count_data_frame = expression_count_A4_df, gene_groups = gene_triplicates_and_pairs, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+
+test_3_results_A4 = test_3_function(expression_count_data_frame = expression_count_A4_df, genes_to_test = test_3_genes, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+```
+
+Adjust the p values in all three tests
+```{r}
+library(tibble) #For editing the data frames
+#sapply runs everything in a list through a function, in this case all p values through our p value adjuster
+#add_column adds the "adjusted_p_value" = ... column after the "p_value" column
+test_1_results_A4_adjusted = add_column(test_1_results_A4, "adjusted_p_value" = sapply(X = test_1_results_A4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value_upper")
+
+test_2_results_A4_adjusted = add_column(test_2_results_A4, "adjusted_p_value" = sapply(X = test_2_results_A4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+
+test_3_results_A4_adjusted = add_column(test_3_results_A4, "adjusted_p_value" = sapply(X = test_3_results_A4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+```
+
+
+Save the outputs to CSVs
+```{r}
+write.csv(x = test_1_results_A4_adjusted, file = "A4_test_1_results.csv", row.names = FALSE)
+write.csv(x = test_2_results_A4_adjusted, file = "A4_test_2_results.csv", row.names = FALSE)
+write.csv(x = test_3_results_A4_adjusted, file = "A4_test_3_results.csv", row.names = FALSE)
+```
+
+#Analysis of Subsamples D4 (Chip 3)
+Read in the CSV
+```{r}
+#Use read.csv to read in the data, and data.frame to make sure it is in data frame format
+#REMEMBER TO ADD BACK IN "LOC123064838" column of all 0 if you remake the csv files
+expression_count_D4_df = data.frame(read.csv("nonnormsubsamplesD4.csv"))
+
+```
+
+Define the gene triplicates and the cluster groups to be tested
+```{r}
+#Triplicates/duplicates need to be stored in lists, because c() vectors just makes one long vector
+
+gene_triplicates_and_pairs = list(
+  list(pinB_A = "LOC123101925", pinB_B = "LOC543308", pinB_D = "LOC100125699"), 
+  list(TaNAC019_A = "LOC123057832", TaNAC019_B = "LOC123064838", TaNAC019_D = "LOC123073994"), 
+  list(TabZIP28_A = "LOC123187748", TabZIP28_B = "LOC123043995", TabZIP28_D = "LOC123051864"), 
+  list(EM_A = "LOC543476", EM_B = "LOC543084", EM_D = "LOC123182837"), 
+  list(ASI_A = "LOC123185730", ASI_B = "LOC123041664", ASI_D = "LOC123049628"), 
+  list(PPDK_A = "LOC123055206", PPDK_B = "LOC123132411", PPDK_D = "LOC123181969"), 
+  list(ATG8_A = "LOC123188447", ATG8_B = "LOC123044698", ATG8_D = "LOC542962"),
+  list(Met_B = "LOC123104584", Met_D = "LOC123179983")
+  )
+
+#Genes for test 3
+test_3_genes = list("ASI_A" = "LOC123185730", "ASI_B" = "LOC123041664", "ASI_D" = "LOC123049628")
+
+#The cluster groups corresponding to the different tissue types
+cluster_groups = list(
+  "endosperm_clusters" = list(1,2,4,7,11),
+  "pericarp_cluster" = list(6),
+  "crease_clusters" = list(10),
+  "embryo_cluster" = list(9)
+)
+```
+
+Use the defined functions to format the input data into the forms required for test 1 and 2
+```{r}
+list_of_gene_pairs_for_test_1 = test_1_gene_pair_list(triplicate_and_pair_list = gene_triplicates_and_pairs)
+list_of_cluster_group_pairs_for_test_2 = test_2_cluster_pair_generator(tissue_cluster_groups = cluster_groups)
+```
+
+
+Run the three tests
+```{r}
+reps = 500000 #Large enough for confidence after bonferroni correction
+
+test_1_results_D4 = test_1_function(expression_count_data_frame = expression_count_D4_df, list_of_pairs_to_test = list_of_gene_pairs_for_test_1, reps = reps)
+
+test_2_results_D4 = test_2_function(expression_count_data_frame = expression_count_D4_df, gene_groups = gene_triplicates_and_pairs, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+
+test_3_results_D4 = test_3_function(expression_count_data_frame = expression_count_D4_df, genes_to_test = test_3_genes, list_of_cluster_group_pairs = list_of_cluster_group_pairs_for_test_2, reps = reps)
+```
+
+Adjust the p values in all three tests
+```{r}
+library(tibble) #For editing the data frames
+#sapply runs everything in a list through a function, in this case all p values through our p value adjuster
+#add_column adds the "adjusted_p_value" = ... column after the "p_value" column
+test_1_results_D4_adjusted = add_column(test_1_results_D4, "adjusted_p_value" = sapply(X = test_1_results_D4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value_upper")
+
+test_2_results_D4_adjusted = add_column(test_2_results_D4, "adjusted_p_value" = sapply(X = test_2_results_D4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+
+test_3_results_D4_adjusted = add_column(test_3_results_D4, "adjusted_p_value" = sapply(X = test_3_results_D4$p_value_upper, FUN = adjust_p_value_text), .after = "p_value")
+```
+
+
+Save the outputs to CSVs
+```{r}
+write.csv(x = test_1_results_D4_adjusted, file = "D4_test_1_results.csv", row.names = FALSE)
+write.csv(x = test_2_results_D4_adjusted, file = "D4_test_2_results.csv", row.names = FALSE)
+write.csv(x = test_3_results_D4_adjusted, file = "D4_test_3_results.csv", row.names = FALSE)
+```
+
